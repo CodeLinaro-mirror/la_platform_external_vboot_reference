@@ -29,7 +29,7 @@ int GptInit(GptData *gpt)
 	return GPT_SUCCESS;
 }
 
-GptEntry *GptNextKernelEntry(GptData *gpt)
+int GptNextKernelEntry(GptData *gpt, uint64_t *start_sector, uint64_t *size)
 {
 	GptHeader *header = (GptHeader *)gpt->primary_header;
 	GptEntry *entries = (GptEntry *)gpt->primary_entries;
@@ -58,8 +58,10 @@ GptEntry *GptNextKernelEntry(GptData *gpt)
 				continue;
 			if (GetEntryPriority(e) == gpt->current_priority) {
 				gpt->current_kernel = i;
+				*start_sector = e->starting_lba;
+				*size = e->ending_lba - e->starting_lba + 1;
 				VB2_DEBUG("GptNextKernelEntry likes it\n");
-				return e;
+				return GPT_SUCCESS;
 			}
 		}
 	}
@@ -99,12 +101,14 @@ GptEntry *GptNextKernelEntry(GptData *gpt)
 
 	if (CGPT_KERNEL_ENTRY_NOT_FOUND == new_kernel) {
 		VB2_DEBUG("GptNextKernelEntry no more kernels\n");
-		return NULL;
+		return GPT_ERROR_NO_VALID_KERNEL;
 	}
 
 	VB2_DEBUG("GptNextKernelEntry likes partition %d\n", new_kernel + 1);
 	e = entries + new_kernel;
-	return e;
+	*start_sector = e->starting_lba;
+	*size = e->ending_lba - e->starting_lba + 1;
+	return GPT_SUCCESS;
 }
 
 /*

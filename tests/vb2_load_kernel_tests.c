@@ -20,7 +20,8 @@
 
 /* Mock kernel partition */
 struct mock_part {
-	GptEntry e;
+	uint32_t start;
+	uint32_t size;
 	struct vb2_keyblock kbh;
 };
 
@@ -83,8 +84,8 @@ static void ResetMocks(void)
 	disk_info.handle = (vb2ex_disk_handle_t)1;
 
 	memset(mock_parts, 0, sizeof(mock_parts));
-	mock_parts[0].e.starting_lba = 100;
-	mock_parts[0].e.ending_lba = 249; /* 75 KB */
+	mock_parts[0].start = 100;
+	mock_parts[0].size = 150; /* 75 KB */
 	mock_parts[0].kbh = (struct vb2_keyblock){
 		.data_key.key_version = 2,
 		.keyblock_flags = -1,
@@ -174,17 +175,12 @@ int GptInit(GptData *gpt)
 	return gpt_init_fail;
 }
 
-uint64_t GptGetEntrySizeLba(const GptEntry *e)
-{
-	return (e->ending_lba - e->starting_lba + 1);
-}
-
-GptEntry *GptNextKernelEntry(GptData *gpt)
+int GptNextKernelEntry(GptData *gpt, uint64_t *start_sector, uint64_t *size)
 {
 	struct mock_part *p = mock_parts + mock_part_next;
 
-	if (!p->e.ending_lba)
-		return NULL;
+	if (!p->size)
+		return GPT_ERROR_NO_VALID_KERNEL;
 
 	if (gpt->flags & GPT_FLAG_EXTERNAL)
 		gpt_flag_external++;
@@ -192,8 +188,10 @@ GptEntry *GptNextKernelEntry(GptData *gpt)
 	memcpy(&cur_kbh, &mock_parts[mock_part_next].kbh, sizeof(cur_kbh));
 
 	gpt->current_kernel = mock_part_next;
+	*start_sector = p->start;
+	*size = p->size;
 	mock_part_next++;
-	return &p->e;
+	return GPT_SUCCESS;
 }
 
 int GptUpdateKernelEntry(GptData *gpt, uint32_t update_type)
@@ -325,20 +323,20 @@ static void load_kernel_tests(void)
 	ResetMocks();
 	memcpy(&mock_parts[1].kbh, &mock_parts[0].kbh,
 	       sizeof(mock_parts[0].kbh));
-	mock_parts[1].e.starting_lba = 300;
-	mock_parts[1].e.ending_lba = 449;
+	mock_parts[1].start = 300;
+	mock_parts[1].size = 150;
 	test_load_kernel(VB2_SUCCESS, "Two good kernels");
 	TEST_EQ(lkp.partition_number, 1, "  part num");
 	TEST_EQ(mock_part_next, 1, "  didn't read second one");
 
 	/* Fail if no kernels found */
 	ResetMocks();
-	mock_parts[0].e.ending_lba = 0;
+	mock_parts[0].size = 0;
 	test_load_kernel(VB2_ERROR_LK_NO_KERNEL_FOUND, "No kernels");
 
 	/* Skip kernels which are too small */
 	ResetMocks();
-	mock_parts[0].e.ending_lba = 109;
+	mock_parts[0].size = 10;
 	test_load_kernel(VB2_ERROR_LK_INVALID_KERNEL_FOUND, "Too small");
 
 	ResetMocks();
@@ -496,8 +494,8 @@ static void load_kernel_tests(void)
 	memcpy(&mock_parts[1].kbh, &mock_parts[0].kbh,
 	       sizeof(mock_parts[0].kbh));
 	mock_parts[0].kbh.data_key.key_version = 4;
-	mock_parts[1].e.starting_lba = 300;
-	mock_parts[1].e.ending_lba = 449;
+	mock_parts[1].start = 300;
+	mock_parts[1].size = 150;
 	mock_parts[1].kbh.data_key.key_version = 3;
 	test_load_kernel(VB2_SUCCESS, "Two kernels roll forward");
 	TEST_EQ(mock_part_next, 2, "  read both");
@@ -607,7 +605,7 @@ static void load_kernel_tests(void)
 			 "Kernel too big for buffer");
 
 	ResetMocks();
-	mock_parts[0].e.ending_lba = 229;
+	mock_parts[0].size = 130;
 	test_load_kernel(VB2_ERROR_LK_INVALID_KERNEL_FOUND,
 			 "Kernel too big for partition");
 

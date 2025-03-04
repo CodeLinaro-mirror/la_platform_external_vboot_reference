@@ -1251,7 +1251,8 @@ static int NoValidKernelEntryTest(void)
 	SetEntryPriority(e1 + KERNEL_A, 0);
 	FreeEntry(e1 + KERNEL_B);
 	RefreshCrc32(gpt);
-	EXPECT(NULL == GptNextKernelEntry(gpt));
+	EXPECT(GPT_ERROR_NO_VALID_KERNEL ==
+	       GptNextKernelEntry(gpt, NULL, NULL));
 
 	return TEST_OK;
 }
@@ -1260,7 +1261,7 @@ static int GetNextNormalTest(void)
 {
 	GptData *gpt = GetEmptyGptData();
 	GptEntry *e1 = (GptEntry *)(gpt->primary_entries);
-	GptEntry *entry;
+	uint64_t start, size;
 
 	/* Normal case - both kernels successful */
 	BuildTestGptData(gpt);
@@ -1269,23 +1270,23 @@ static int GetNextNormalTest(void)
 	RefreshCrc32(gpt);
 	GptInit(gpt);
 
-	entry = GptNextKernelEntry(gpt);
-	EXPECT(entry);
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_A == gpt->current_kernel);
-	EXPECT(34 == entry->starting_lba);
-	EXPECT(100 == GptGetEntrySizeLba(entry));
+	EXPECT(34 == start);
+	EXPECT(100 == size);
 
-	entry = GptNextKernelEntry(gpt);
-	EXPECT(entry);
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_B == gpt->current_kernel);
-	EXPECT(134 == entry->starting_lba);
-	EXPECT(99 == GptGetEntrySizeLba(entry));
+	EXPECT(134 == start);
+	EXPECT(99 == size);
 
-	EXPECT(NULL == GptNextKernelEntry(gpt));
+	EXPECT(GPT_ERROR_NO_VALID_KERNEL ==
+	       GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(-1 == gpt->current_kernel);
 
 	/* Call as many times as you want; you won't get another kernel... */
-	EXPECT(NULL == GptNextKernelEntry(gpt));
+	EXPECT(GPT_ERROR_NO_VALID_KERNEL ==
+	       GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(-1 == gpt->current_kernel);
 
 	return TEST_OK;
@@ -1295,6 +1296,7 @@ static int GetNextPrioTest(void)
 {
 	GptData *gpt = GetEmptyGptData();
 	GptEntry *e1 = (GptEntry *)(gpt->primary_entries);
+	uint64_t start, size;
 
 	/* Priority 3, 4, 0, 4 - should boot order B, Y, A */
 	BuildTestGptData(gpt);
@@ -1305,13 +1307,14 @@ static int GetNextPrioTest(void)
 	RefreshCrc32(gpt);
 	GptInit(gpt);
 
-	EXPECT(GptNextKernelEntry(gpt));
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_B == gpt->current_kernel);
-	EXPECT(GptNextKernelEntry(gpt));
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_Y == gpt->current_kernel);
-	EXPECT(GptNextKernelEntry(gpt));
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_A == gpt->current_kernel);
-	EXPECT(NULL == GptNextKernelEntry(gpt));
+	EXPECT(GPT_ERROR_NO_VALID_KERNEL ==
+	       GptNextKernelEntry(gpt, &start, &size));
 
 	return TEST_OK;
 }
@@ -1320,6 +1323,7 @@ static int GetNextTriesTest(void)
 {
 	GptData *gpt = GetEmptyGptData();
 	GptEntry *e1 = (GptEntry *)(gpt->primary_entries);
+	uint64_t start, size;
 
 	/* Tries=nonzero is attempted just like success, but tries=0 isn't */
 	BuildTestGptData(gpt);
@@ -1330,11 +1334,12 @@ static int GetNextTriesTest(void)
 	RefreshCrc32(gpt);
 	GptInit(gpt);
 
-	EXPECT(GptNextKernelEntry(gpt));
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_X == gpt->current_kernel);
-	EXPECT(GptNextKernelEntry(gpt));
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_A == gpt->current_kernel);
-	EXPECT(NULL == GptNextKernelEntry(gpt));
+	EXPECT(GPT_ERROR_NO_VALID_KERNEL ==
+	       GptNextKernelEntry(gpt, &start, &size));
 
 	return TEST_OK;
 }
@@ -1344,7 +1349,7 @@ static int GptUpdateTest(void)
 	GptData *gpt = GetEmptyGptData();
 	GptEntry *e = (GptEntry *)(gpt->primary_entries);
 	GptEntry *e2 = (GptEntry *)(gpt->secondary_entries);
-	GptEntry *boot;
+	uint64_t start, size;
 
 	/* Tries=nonzero is attempted just like success, but tries=0 isn't */
 	BuildTestGptData(gpt);
@@ -1356,42 +1361,38 @@ static int GptUpdateTest(void)
 	gpt->modified = 0;  /* Nothing modified yet */
 
 	/* Successful kernel */
-	boot = GptNextKernelEntry(gpt);
-	EXPECT(NULL != boot);
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_A == gpt->current_kernel);
-	EXPECT(1 == GetEntrySuccessful(boot));
-	EXPECT(4 == GetEntryPriority(boot));
-	EXPECT(0 == GetEntryTries(boot));
-	/* Check secondary entries */
+	EXPECT(1 == GetEntrySuccessful(e + KERNEL_A));
+	EXPECT(4 == GetEntryPriority(e + KERNEL_A));
+	EXPECT(0 == GetEntryTries(e + KERNEL_A));
 	EXPECT(1 == GetEntrySuccessful(e2 + KERNEL_A));
 	EXPECT(4 == GetEntryPriority(e2 + KERNEL_A));
 	EXPECT(0 == GetEntryTries(e2 + KERNEL_A));
-
 	/* Trying successful kernel changes nothing */
 	EXPECT(GPT_SUCCESS == GptUpdateKernelEntry(gpt, GPT_UPDATE_ENTRY_TRY));
-	EXPECT(1 == GetEntrySuccessful(boot));
-	EXPECT(4 == GetEntryPriority(boot));
-	EXPECT(0 == GetEntryTries(boot));
+	EXPECT(1 == GetEntrySuccessful(e + KERNEL_A));
+	EXPECT(4 == GetEntryPriority(e + KERNEL_A));
+	EXPECT(0 == GetEntryTries(e + KERNEL_A));
 	EXPECT(0 == gpt->modified);
 	/* Marking it bad also does not update it. */
 	EXPECT(GPT_SUCCESS == GptUpdateKernelEntry(gpt, GPT_UPDATE_ENTRY_BAD));
-	EXPECT(1 == GetEntrySuccessful(boot + KERNEL_A));
-	EXPECT(4 == GetEntryPriority(boot + KERNEL_A));
-	EXPECT(0 == GetEntryTries(boot + KERNEL_A));
+	EXPECT(1 == GetEntrySuccessful(e + KERNEL_A));
+	EXPECT(4 == GetEntryPriority(e + KERNEL_A));
+	EXPECT(0 == GetEntryTries(e + KERNEL_A));
 	EXPECT(0 == gpt->modified);
 
 	/* Kernel with tries */
-	boot = GptNextKernelEntry(gpt);
-	EXPECT(NULL != boot);
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_B == gpt->current_kernel);
-	EXPECT(0 == GetEntrySuccessful(boot));
-	EXPECT(3 == GetEntryPriority(boot));
-	EXPECT(2 == GetEntryTries(boot));
+	EXPECT(0 == GetEntrySuccessful(e + KERNEL_B));
+	EXPECT(3 == GetEntryPriority(e + KERNEL_B));
+	EXPECT(2 == GetEntryTries(e + KERNEL_B));
 	/* Marking it bad clears it */
 	EXPECT(GPT_SUCCESS == GptUpdateKernelEntry(gpt, GPT_UPDATE_ENTRY_BAD));
-	EXPECT(0 == GetEntrySuccessful(boot));
-	EXPECT(0 == GetEntryPriority(boot));
-	EXPECT(0 == GetEntryTries(boot));
+	EXPECT(0 == GetEntrySuccessful(e + KERNEL_B));
+	EXPECT(0 == GetEntryPriority(e + KERNEL_B));
+	EXPECT(0 == GetEntryTries(e + KERNEL_B));
 	/* Which affects both copies of the partition entries */
 	EXPECT(0 == GetEntrySuccessful(e2 + KERNEL_B));
 	EXPECT(0 == GetEntryPriority(e2 + KERNEL_B));
@@ -1400,25 +1401,24 @@ static int GptUpdateTest(void)
 	EXPECT(0x0F == gpt->modified);
 
 	/* Another kernel with tries */
-	boot = GptNextKernelEntry(gpt);
-	EXPECT(NULL != boot);
+	EXPECT(GPT_SUCCESS == GptNextKernelEntry(gpt, &start, &size));
 	EXPECT(KERNEL_X == gpt->current_kernel);
-	EXPECT(0 == GetEntrySuccessful(boot));
-	EXPECT(2 == GetEntryPriority(boot));
-	EXPECT(2 == GetEntryTries(boot));
+	EXPECT(0 == GetEntrySuccessful(e + KERNEL_X));
+	EXPECT(2 == GetEntryPriority(e + KERNEL_X));
+	EXPECT(2 == GetEntryTries(e + KERNEL_X));
 	/* Trying it uses up a try */
 	EXPECT(GPT_SUCCESS == GptUpdateKernelEntry(gpt, GPT_UPDATE_ENTRY_TRY));
-	EXPECT(0 == GetEntrySuccessful(boot));
-	EXPECT(2 == GetEntryPriority(boot));
-	EXPECT(1 == GetEntryTries(boot));
+	EXPECT(0 == GetEntrySuccessful(e + KERNEL_X));
+	EXPECT(2 == GetEntryPriority(e + KERNEL_X));
+	EXPECT(1 == GetEntryTries(e + KERNEL_X));
 	EXPECT(0 == GetEntrySuccessful(e2 + KERNEL_X));
 	EXPECT(2 == GetEntryPriority(e2 + KERNEL_X));
 	EXPECT(1 == GetEntryTries(e2 + KERNEL_X));
 	/* Trying it again marks it inactive */
 	EXPECT(GPT_SUCCESS == GptUpdateKernelEntry(gpt, GPT_UPDATE_ENTRY_TRY));
-	EXPECT(0 == GetEntrySuccessful(boot));
-	EXPECT(0 == GetEntryPriority(boot));
-	EXPECT(0 == GetEntryTries(boot));
+	EXPECT(0 == GetEntrySuccessful(e + KERNEL_X));
+	EXPECT(0 == GetEntryPriority(e + KERNEL_X));
+	EXPECT(0 == GetEntryTries(e + KERNEL_X));
 
 	/* Can't update if entry isn't a kernel, or there isn't an entry */
 	memcpy(&e[KERNEL_X].type, &guid_rootfs, sizeof(guid_rootfs));
