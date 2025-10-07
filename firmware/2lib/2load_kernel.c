@@ -8,6 +8,9 @@
 
 #include "2api.h"
 #include "2common.h"
+#ifdef USE_LIBAVB
+#include "2load_android_kernel.h"
+#endif
 #include "2misc.h"
 #include "2nvstorage.h"
 #include "2packed_key.h"
@@ -25,33 +28,6 @@ enum vb2_load_partition_flags {
 };
 
 #define KBUF_SIZE 65536  /* Bytes to read at start of kernel partition */
-
-#define LOWEST_TPM_VERSION 0xffffffff
-
-/**
- * Check if a valid keyblock is required.
- *
- * @param ctx		Vboot context
- * @return 1 if valid keyblock required (officially signed kernel);
- *         0 if valid hash is enough (self-signed kernel).
- */
-static int need_valid_keyblock(struct vb2_context *ctx)
-{
-	/* Normal and recovery modes always require official OS */
-	if (ctx->boot_mode != VB2_BOOT_MODE_DEVELOPER)
-		return 1;
-
-	/* FWMP can require developer mode to use signed kernels */
-	if (vb2_secdata_fwmp_get_flag(
-		ctx, VB2_SECDATA_FWMP_DEV_ENABLE_OFFICIAL_ONLY))
-		return 1;
-
-	/* Developers may require signed kernels */
-	if (vb2_nv_get(ctx, VB2_NV_DEV_BOOT_SIGNED_ONLY))
-		return 1;
-
-	return 0;
-}
 
 /**
  * Return a pointer to the keyblock inside a vblock.
@@ -164,7 +140,7 @@ static vb2_error_t vb2_verify_kernel_vblock(struct vb2_context *ctx,
 	uint32_t key_size;
 	struct vb2_public_key kernel_key;
 
-	int need_keyblock_valid = need_valid_keyblock(ctx);
+	bool need_keyblock_valid = vb2_need_kernel_verification(ctx);
 	int keyblock_valid = 1;  /* Assume valid */
 
 	vb2_error_t rv;
@@ -339,7 +315,7 @@ static vb2_error_t vb2_verify_kernel_vblock(struct vb2_context *ctx,
 }
 
 /**
- * Load and verify a partition from the stream.
+ * Load and verify a ChromeOS kernel partition from the stream.
  *
  * @param ctx			Vboot context
  * @param params		Load-kernel parameters
@@ -348,10 +324,9 @@ static vb2_error_t vb2_verify_kernel_vblock(struct vb2_context *ctx,
  * @param kernel_version	The kernel version of this partition.
  * @return VB2_SUCCESS, or non-zero error code.
  */
-static vb2_error_t vb2_load_partition(struct vb2_context *ctx,
-				      struct vb2_kernel_params *params,
-				      VbExStream_t stream, uint32_t lpflags,
-				      uint32_t *kernel_version)
+static vb2_error_t vb2_load_chromeos_kernel(
+	struct vb2_context *ctx, struct vb2_kernel_params *params,
+	VbExStream_t stream, uint32_t lpflags, uint32_t *kernel_version)
 {
 	uint32_t read_ms = 0, start_ts;
 	struct vb2_workbuf wb;
@@ -482,8 +457,9 @@ static vb2_error_t try_minios_kernel(struct vb2_context *ctx,
 		return rv;
 	}
 
-	rv = vb2_load_partition(ctx, params, stream, lpflags, &kernel_version);
-	VB2_DEBUG("vb2_load_partition returned: %d\n", rv);
+	/* We are looking for ChromeOS partitions */
+	rv = vb2_load_chromeos_kernel(ctx, params, stream, lpflags, &kernel_version);
+	VB2_DEBUG("vb2_load_chromeos_kernel returned: %#x\n", rv);
 
 	VbExStreamClose(stream);
 
@@ -609,14 +585,61 @@ vb2_error_t vb2api_load_minios_kernel(struct vb2_context *ctx,
 	return rv;
 }
 
+static void update_kernel_version(struct vb2_context *ctx)
+{
+	struct vb2_shared_data *sd = vb2_get_sd(ctx);
+	uint32_t max_rollforward =
+		vb2_nv_get(ctx, VB2_NV_KERNEL_MAX_ROLLFORWARD);
+	uint32_t new_kernel_version = sd->kernel_version;
+
+	VB2_DEBUG("Checking if TPM kernel version needs advancing\n");
+
+	/*
+	 * Special case for when we're trying a slot with new firmware.
+	 * Firmware updates also usually change the kernel key, which means
+	 * that the new firmware can only boot a new kernel, and the old
+	 * firmware in the previous slot can only boot the previous kernel.
+	 *
+	 * Don't roll-forward the kernel version, because we don't yet know if
+	 * the new kernel will successfully boot.
+	 */
+	if (vb2_nv_get(ctx, VB2_NV_FW_RESULT) == VB2_FW_RESULT_TRYING) {
+		VB2_DEBUG("Trying new FW; "
+			  "skip kernel version roll-forward.\n");
+		return;
+	}
+
+	/*
+	 * Limit kernel version rollforward if needed.  Can't limit kernel
+	 * version to less than the version currently in the TPM.  That is,
+	 * we're limiting rollforward, not allowing rollback.
+	 */
+	if (max_rollforward < sd->kernel_version_secdata)
+		max_rollforward = sd->kernel_version_secdata;
+
+	if (new_kernel_version > max_rollforward) {
+		VB2_DEBUG("Limiting TPM kernel version roll-forward "
+			  "to %#x < %#x\n",
+			  max_rollforward, sd->kernel_version_secdata);
+
+		new_kernel_version = max_rollforward;
+	}
+
+	if (new_kernel_version > sd->kernel_version_secdata) {
+		sd->kernel_version_secdata = new_kernel_version;
+		vb2_secdata_kernel_set(ctx, VB2_SECDATA_KERNEL_VERSIONS,
+				       sd->kernel_version_secdata);
+	}
+}
+
 vb2_error_t vb2api_load_kernel(struct vb2_context *ctx,
 			       struct vb2_kernel_params *params,
 			       struct vb2_disk_info *disk_info)
 {
 	struct vb2_shared_data *sd = vb2_get_sd(ctx);
 	int found_partitions = 0;
-	uint32_t lowest_version = LOWEST_TPM_VERSION;
-	vb2_error_t rv;
+	uint32_t kernel_version;
+	vb2_error_t rv = VB2_ERROR_LK_NO_KERNEL_FOUND;
 
 	/* Clear output params */
 	params->partition_number = 0;
@@ -631,13 +654,13 @@ vb2_error_t vb2api_load_kernel(struct vb2_context *ctx,
 			? GPT_FLAG_EXTERNAL : 0;
 	if (AllocAndReadGptData(disk_info->handle, &gpt)) {
 		VB2_DEBUG("Unable to read GPT data\n");
-		goto gpt_done;
+		goto exit;
 	}
 
 	/* Initialize GPT library */
 	if (GptInit(&gpt)) {
 		VB2_DEBUG("Error parsing GPT\n");
-		goto gpt_done;
+		goto exit;
 	}
 
 	/* Loop over candidate kernel partitions */
@@ -645,132 +668,92 @@ vb2_error_t vb2api_load_kernel(struct vb2_context *ctx,
 	while ((entry = GptNextKernelEntry(&gpt))) {
 		uint64_t part_start = entry->starting_lba;
 		uint64_t part_size = GptGetEntrySizeLba(entry);
+		kernel_version = 0;
 
-		VB2_DEBUG("Found kernel entry at %"
+		VB2_DEBUG("Found %s kernel entry at %"
 			  PRIu64 " size %" PRIu64 "\n",
+			  IsAndroid(entry) ? "Android" : "ChromeOS",
 			  part_start, part_size);
 
 		/* Found at least one kernel partition. */
 		found_partitions++;
 
-		/* Set up the stream */
-		VbExStream_t stream = NULL;
-		if (VbExStreamOpen(disk_info->handle,
-				   part_start, part_size, &stream)) {
-			VB2_DEBUG("Partition error getting stream.\n");
-			VB2_DEBUG("Marking kernel as invalid.\n");
-			GptUpdateKernelEntry(&gpt, GPT_UPDATE_ENTRY_BAD);
-			continue;
+		if (IsAndroid(entry)) {
+#ifdef USE_LIBAVB
+			rv = vb2_load_android(ctx, &gpt, entry, params, disk_info->handle);
+#else
+			/* Don't allow to boot android without AVB */
+			rv = VB2_ERROR_LK_INVALID_KERNEL_FOUND;
+#endif
+		} else if (IsChromeOS(entry)) {
+			/* Set up the stream */
+			VbExStream_t stream = NULL;
+
+			if (VbExStreamOpen(disk_info->handle, part_start, part_size, &stream)) {
+				VB2_DEBUG("Partition error getting stream.\n");
+				VB2_DEBUG("Marking kernel as invalid.\n");
+				GptUpdateKernelEntry(&gpt, GPT_UPDATE_ENTRY_BAD);
+				continue;
+			}
+
+			/* Append status and try to load chromeos partition */
+			rv = vb2_load_chromeos_kernel(ctx, params, stream, 0, &kernel_version);
+			VbExStreamClose(stream);
+		} else {
+			rv = VB2_ERROR_LK_INVALID_KERNEL_FOUND;
 		}
 
-		uint32_t lpflags = 0;
-		if (params->partition_number > 0) {
-			/*
-			 * If we already have a good kernel, we only needed to
-			 * look at the vblock versions to check for rollback.
-			 */
-			lpflags |= VB2_LOAD_PARTITION_FLAG_VBLOCK_ONLY;
-		}
+		if (rv == VB2_SUCCESS)
+			break;
 
-		uint32_t kernel_version = 0;
-		rv = vb2_load_partition(ctx, params, stream, lpflags,
-					&kernel_version);
-		VbExStreamClose(stream);
+		VB2_DEBUG("Marking kernel as invalid (err=%x).\n", rv);
+		GptUpdateKernelEntry(&gpt, GPT_UPDATE_ENTRY_BAD);
+	}
 
-		if (rv) {
-			VB2_DEBUG("Marking kernel as invalid (err=%x).\n", rv);
-			GptUpdateKernelEntry(&gpt, GPT_UPDATE_ENTRY_BAD);
-			continue;
-		}
+	if (rv) {
+		if (found_partitions > 0)
+			rv = VB2_ERROR_LK_INVALID_KERNEL_FOUND;
+		else
+			rv = VB2_ERROR_LK_NO_KERNEL_FOUND;
+		goto exit;
+	}
 
-		int keyblock_valid = sd->flags & VB2_SD_FLAG_KERNEL_SIGNED;
-		/* Track lowest version from a valid header. */
-		if (keyblock_valid && lowest_version > kernel_version)
-			lowest_version = kernel_version;
+	sd->kernel_version = kernel_version;
+	VB2_DEBUG("Combined version: 0x%x\n", sd->kernel_version);
 
-		VB2_DEBUG("Keyblock valid: %d\n", keyblock_valid);
-		VB2_DEBUG("Combined version: %u\n", kernel_version);
+	/*
+	 * TODO: GPT partitions start at 1, but cgptlib starts them at
+	 * 0.  Adjust here, until cgptlib is fixed.
+	 */
+	params->partition_number = gpt.current_kernel + 1;
+	params->disk_handle = disk_info->handle;
 
+	/*
+	 * TODO: GetCurrentKernelUniqueGuid() should take a destination
+	 * size, or the dest should be a struct, so we know it's big
+	 * enough.
+	 */
+	GetCurrentKernelUniqueGuid(&gpt, &params->partition_guid);
+
+	VB2_DEBUG("Good partition %d\n", params->partition_number);
+
+	VB2_ASSERT(entry);
+
+	if (GetEntrySuccessful(entry)) {
+		if (ctx->boot_mode == VB2_BOOT_MODE_NORMAL)
+			update_kernel_version(ctx);
+	} else {
 		/*
-		 * If we're only looking at headers, we're done with this
-		 * partition.
-		 */
-		if (lpflags & VB2_LOAD_PARTITION_FLAG_VBLOCK_ONLY)
-			continue;
-
-		/*
-		 * Otherwise, we found a partition we like.
-		 *
-		 * TODO: GPT partitions start at 1, but cgptlib starts them at
-		 * 0.  Adjust here, until cgptlib is fixed.
-		 */
-		params->partition_number = gpt.current_kernel + 1;
-
-		sd->kernel_version = kernel_version;
-
-		/*
-		 * TODO: GetCurrentKernelUniqueGuid() should take a destination
-		 * size, or the dest should be a struct, so we know it's big
-		 * enough.
-		 */
-		GetCurrentKernelUniqueGuid(&gpt, &params->partition_guid);
-
-		/* Update GPT to note this is the kernel we're trying.
+		 * Update GPT to note this is the kernel we're trying.
 		 * But not when we assume that the boot process may
 		 * not complete for valid reasons (eg. early shutdown).
 		 */
 		if (!(ctx->flags & VB2_CONTEXT_NOFAIL_BOOT))
 			GptUpdateKernelEntry(&gpt, GPT_UPDATE_ENTRY_TRY);
-
-		/*
-		 * If we're in recovery mode or we're about to boot a
-		 * non-officially-signed kernel, there's no rollback
-		 * protection, so we can stop at the first valid kernel.
-		 */
-		if (ctx->boot_mode == VB2_BOOT_MODE_MANUAL_RECOVERY ||
-		    !keyblock_valid) {
-			VB2_DEBUG("In recovery mode or dev-signed kernel\n");
-			break;
-		}
-
-		/*
-		 * Otherwise, we do care about the key index in the TPM.  If
-		 * the good partition's key version is the same as the tpm,
-		 * then the TPM doesn't need updating; we can stop now.
-		 * Otherwise, we'll check all the other headers to see if they
-		 * contain a newer key.
-		 */
-		if (sd->kernel_version == sd->kernel_version_secdata) {
-			VB2_DEBUG("Same kernel version\n");
-			break;
-		}
-	} /* while (GptNextKernelEntry) */
-
- gpt_done:
-	/* Write and free GPT data */
-	WriteAndFreeGptData(disk_info->handle, &gpt);
-
-	/* Handle finding a good partition */
-	if (params->partition_number > 0) {
-		VB2_DEBUG("Good partition %d\n", params->partition_number);
-		/*
-		 * Validity check - only store a new TPM version if we found
-		 * one. If lowest_version is still at its initial value, we
-		 * didn't find one; for example, we're in developer mode and
-		 * just didn't look.
-		 */
-		if (lowest_version != LOWEST_TPM_VERSION &&
-		    lowest_version > sd->kernel_version_secdata)
-			sd->kernel_version_secdata = lowest_version;
-
-		/* Success! */
-		rv = VB2_SUCCESS;
-		params->disk_handle = disk_info->handle;
-	} else if (found_partitions > 0) {
-		rv = VB2_ERROR_LK_INVALID_KERNEL_FOUND;
-	} else {
-		rv = VB2_ERROR_LK_NO_KERNEL_FOUND;
 	}
 
+exit:
+	/* Write and free GPT data */
+	WriteAndFreeGptData(disk_info->handle, &gpt);
 	return rv;
 }

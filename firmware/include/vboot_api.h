@@ -26,7 +26,7 @@
 
 #include "../2lib/include/2constants.h"
 #include "../2lib/include/2return_codes.h"
-#include "gpt.h"
+#include "vb2_gpt.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -86,6 +86,19 @@ typedef void *VbExStream_t;
  */
 vb2_error_t VbExStreamOpen(vb2ex_disk_handle_t handle, uint64_t lba_start,
 			   uint64_t lba_count, VbExStream_t *stream_ptr);
+
+/**
+ * Skip bytes from a stream on a disk
+ *
+ * @param stream	Stream to read from
+ * @param bytes		Number of bytes to skip
+ *
+ * @return Error code, or VB2_SUCCESS. Failure to skip as much data as
+ * requested is an error.
+ *
+ * This is used to skip some bytes from the stream.
+ */
+vb2_error_t VbExStreamSkip(VbExStream_t stream, uint32_t bytes);
 
 /**
  * Read from a stream on a disk

@@ -31,6 +31,7 @@
 #include "2return_codes.h"
 #include "2rsa.h"
 #include "2secdata_struct.h"
+#include "gpt_misc.h"
 
 #define _VB2_TRY_IMPL(expr, ctx, recovery_reason, ...) do { \
 	vb2_error_t _vb2_try_rv = (expr); \
@@ -613,8 +614,38 @@ struct vb2_kernel_params {
 	uint32_t bootloader_size;
 	/* UniquePartitionGuid for boot partition. */
 	uint8_t partition_guid[16];
-	/* Flags set by signer. */
+	/* Flags with kernel type. */
 	uint32_t flags;
+	/* Ramdisk address */
+	uint8_t *ramdisk;
+	/* Size of the ramdisk */
+	size_t ramdisk_size;
+	/* Bootconfig address */
+	void *bootconfig;
+	/* Size of the bootconfig */
+	size_t bootconfig_size;
+	/* Pointer to Android vendor command line buffer */
+	char *vendor_cmdline_buffer;
+	/* Address of the region with kernel cmdline parameters. */
+	char *vboot_cmdline_buffer;
+	/* Size of the region with kernel cmdline parameters. */
+	uint32_t vboot_cmdline_size;
+
+	/*
+	 * Destination buffer for pvmfw. Shall be ignored if pvmfw_buffer_size is 0.
+	 * This field can be overwritten by implementation and the caller needs
+	 * to respect the new value.
+	 */
+	void *pvmfw_buffer;
+	/*
+	 * Size of pvmfw buffer in bytes. If non-zero then implementation shall
+	 * try to load pvmfw to the pvmfw buffer. This field can be overwritten
+	 * by implementation and the caller needs to respect the new value.
+	 * If successful the pvmfw_out_size shall be set to the correct non-zero value.
+	 */
+	uint32_t pvmfw_buffer_size;
+	/* Size of pvmfw partition in bytes in pvmfw buffer. */
+	uint32_t pvmfw_out_size;
 };
 
 /*****************************************************************************/
@@ -1039,7 +1070,7 @@ bool vb2api_hwcrypto_allowed(struct vb2_context *ctx);
  * Implementation should reboot or halt the machine, or fall back to some
  * alternative boot flow.  Retrying vboot is unlikely to succeed.
  */
-void vb2ex_abort(void);
+void vb2ex_abort(void) __attribute__((noreturn));
 
 /**
  * Commit any pending data to disk.
@@ -1055,6 +1086,31 @@ void vb2ex_abort(void);
  * @return VB2_SUCCESS, or non-zero error code.
  */
 vb2_error_t vb2ex_commit_data(struct vb2_context *ctx);
+
+/* Boot modes that vb2ex_get_android_bootmode can return */
+enum vb2_android_bootmode {
+	/* Boot android normally */
+	VB2_ANDROID_NORMAL_BOOT = 0,
+	/* Boot android into recovery mode */
+	VB2_ANDROID_RECOVERY_BOOT = 1,
+};
+
+/**
+ * Get Android boot mode.
+ *
+ * Android boot mode is saved on the misc partition where FW can obtain
+ * information about what boot mode is requested.
+ *
+ * @param ctx		Vboot context
+ * @param disk		Pointer to the disk
+ * @param gpt		Pointer to the GPT from the disk
+ * @param bootmode	Return requested boot mode for Android
+ * @return VB2_SUCCESS, or non-zero error code.
+ */
+vb2_error_t vb2ex_get_android_bootmode(struct vb2_context *ctx,
+				       vb2ex_disk_handle_t disk,
+				       GptData *gpt,
+				       enum vb2_android_bootmode *bootmode);
 
 /*****************************************************************************/
 /* TPM functionality */

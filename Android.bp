@@ -60,6 +60,7 @@ cc_defaults {
     shared_libs: [
         "libcrypto",
         "libflashrom",
+        "libziparchive",
         "libssl",
     ],
 
@@ -186,6 +187,7 @@ cc_library_static {
         "host/lib/crypto.c",
         "host/lib/file_keys.c",
         "host/lib/fmap.c",
+        "host/lib/gpio_uapi.c",
         "host/lib/host_common.c",
         "host/lib/host_key2.c",
         "host/lib/host_keyblock.c",
@@ -261,6 +263,7 @@ cc_library_static {
         "host/lib/crypto.c",
         "host/lib/extract_vmlinuz.c",
         "host/lib/fmap.c",
+        "host/lib/gpio_uapi.c",
         "host/lib/host_misc.c",
         "host/lib21/host_misc.c",
         ":tlcl_srcs",
@@ -322,6 +325,27 @@ cc_binary {
     ],
 }
 
+cc_library_static {
+    name: "libziparchive_wrapper",
+    vendor: true,
+    enabled: false,
+
+    target: {
+        android: {
+            enabled: true,
+            srcs: [
+                "futility/archive/libziparchive_wrapper/libziparchive_wrapper.cpp",
+            ],
+            export_include_dirs: [
+                "futility/archive/libziparchive_wrapper/include",
+            ],
+            shared_libs: [
+                "libziparchive",
+            ],
+        },
+    },
+}
+
 filegroup {
     name: "futility_srcs",
     srcs: [
@@ -354,6 +378,8 @@ filegroup {
 
         // USE_FLASHROM
         "host/lib/flashrom_drv.c",
+        "futility/archive/updater_archive_fallback.c",
+        "futility/archive/updater_archive_libziparchive.c",
         "futility/updater_archive.c",
         "futility/updater_dut.c",
         "futility/updater_manifest.c",
@@ -393,6 +419,13 @@ cc_binary {
 
     local_include_dirs: ["futility"],
 
+    target: {
+        android: {
+            cflags: ["-DHAVE_LIBZIPARCHIVE"],
+            static_libs: ["libziparchive_wrapper"],
+        },
+    },
+
     static_libs: ["libvboot_util"],
 }
 
@@ -403,4 +436,71 @@ cc_binary {
 
     srcs: ["utility/crossystem.c"],
     static_libs: ["libvboot_util"],
+}
+
+filegroup {
+    name: "vboot_devkeys",
+    srcs: [
+        "tests/devkeys/arv_platform.keyblock",
+        "tests/devkeys/arv_platform.vbprivk",
+        "tests/devkeys/arv_platform.vbpubk",
+        "tests/devkeys/arv_root.vbpubk",
+        "tests/devkeys/cr50.pem",
+        "tests/devkeys/firmware_data_key.vbprivk",
+        "tests/devkeys/firmware_data_key.vbpubk",
+        "tests/devkeys/firmware.keyblock",
+        "tests/devkeys/installer_kernel_data_key.vbprivk",
+        "tests/devkeys/installer_kernel_data_key.vbpubk",
+        "tests/devkeys/installer_kernel.keyblock",
+        "tests/devkeys/kernel_data_key.vbprivk",
+        "tests/devkeys/kernel_data_key.vbpubk",
+        "tests/devkeys/kernel.keyblock",
+        "tests/devkeys/kernel_subkey.vbprivk",
+        "tests/devkeys/kernel_subkey.vbpubk",
+        "tests/devkeys/key_ec_efs.vbprik2",
+        "tests/devkeys/key_ec_efs.vbpubk2",
+        "tests/devkeys/key.versions",
+        "tests/devkeys/minios_kernel_data_key.vbprivk",
+        "tests/devkeys/minios_kernel_data_key.vbpubk",
+        "tests/devkeys/minios_kernel.keyblock",
+        "tests/devkeys/recovery_kernel_data_key.vbprivk",
+        "tests/devkeys/recovery_kernel_data_key.vbpubk",
+        "tests/devkeys/recovery_kernel.keyblock",
+        "tests/devkeys/recovery_key.vbprivk",
+        "tests/devkeys/recovery_key.vbpubk",
+        "tests/devkeys/root_key.vbprivk",
+        "tests/devkeys/root_key.vbpubk",
+    ],
+}
+
+cc_test {
+    name: "vb2_sha256_x86_tests",
+    srcs: [
+        "tests/vb2_sha256_x86_tests.c",
+        "tests/common/tests.c",
+        "firmware/2lib/2sha256_x86.c",
+        "firmware/2lib/2hwcrypto.c",
+    ],
+    defaults: ["vboot_defaults"],
+    static_libs: ["libvboot_util"],
+    local_include_dirs: [
+        "firmware",
+        "tests",
+        "tests/common/",
+        "firmware/2lib/",
+    ],
+    compile_multilib: "64",
+    strip: {
+        all: true,
+    },
+    device_supported: true,
+    host_supported: false,
+    enabled: false,
+    target: {
+        android_x86_64: {
+            enabled: true,
+        },
+    },
+    test_suites: ["dts"],
+    gtest: false,
 }

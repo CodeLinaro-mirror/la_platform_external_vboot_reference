@@ -157,7 +157,7 @@ make_keyblock() {
   local signkey_path=$4
   # Remote URI to the key we're using to sign the keyblock.
   # Optional, if not set we'll look for the private key in signkey_path.
-  local signkey_uri=$5
+  local signkey_uri=${5-}
 
   local signkey_priv="${signkey_path}.vbprivk"
   # If the URI is set, the private key is remote.
@@ -312,4 +312,25 @@ generate_ed25519_key() {
   # Generate ed25519 private and public key.
   openssl genpkey -algorithm Ed25519 -out "${base}.priv.pem"
   openssl pkey -in "${base}.priv.pem" -pubout -text_pub -out "${base}.pub.pem"
+}
+
+# Create a new ecdsa p-256 key pair given a base name. For example, if the
+# base is "dir/foo", this will create "dir/foo.priv.pem" and
+# "dir/foo.pub.pem".
+# Args: BASE
+generate_ecdsa_p256_key() {
+  local key_base="$1"
+  local private_key_pem="${key_base}.priv.pem"
+  local_public_key_pem="${key_base}.pub.pem"
+
+  # ECDSA on the P-256 curve
+  local openssl_curve_opt="P-256"
+
+  # Generate ECDSA private key in PEM format using OpenSSL.
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:"${openssl_curve_opt}" \
+    -outform PEM -out "${private_key_pem}"
+
+  # Save the public key in PEM format.
+  openssl pkey -in "${private_key_pem}" -pubout -text_pub -out "${local_public_key_pem}"
+
 }

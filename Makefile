@@ -39,6 +39,7 @@
 SRCDIR := $(shell pwd)
 BUILD = ${SRCDIR}/build
 export BUILD
+LIBAVB_SRCDIR ?= firmware/avb/libavb
 
 # Stuff for 'make install'
 INSTALL = install
@@ -468,6 +469,15 @@ FWLIB_OBJS = ${FWLIB_SRCS:%.c=${BUILD}/%.o} ${FWLIB_ASMS:%.S=${BUILD}/%.o}
 TLCL_OBJS = ${TLCL_SRCS:%.c=${BUILD}/%.o}
 ALL_OBJS += ${FWLIB_OBJS} ${TLCL_OBJS}
 
+# We are adding libavb objs to FWLIB_OBJS thus need to include this file here.
+# Since libavb sources are stored in external library, this needs to be moved
+# into expected location beforehand.
+ifneq ($(filter-out 0,${USE_AVB}),)
+include firmware/avb/Makefile
+FWLIB_SRCS += \
+	firmware/2lib/2load_android_kernel.c
+endif
+
 # Maintain behaviour of default on.
 USE_FLASHROM ?= 1
 
@@ -511,6 +521,7 @@ UTILLIB_SRCS = \
 	host/lib/file_keys.c \
 	$(COMMONLIB_SRCS) \
 	host/lib/fmap.c \
+	host/lib/gpio_uapi.c \
 	host/lib/host_common.c \
 	host/lib/host_key2.c \
 	host/lib/host_keyblock.c \
@@ -582,6 +593,7 @@ HOSTLIB_SRCS = \
 	host/lib/extract_vmlinuz.c \
 	$(COMMONLIB_SRCS) \
 	host/lib/fmap.c \
+	host/lib/gpio_uapi.c \
 	host/lib/host_misc.c \
 	host/lib21/host_misc.c \
 	${TLCL_SRCS}
@@ -735,12 +747,22 @@ FUTIL_SRCS = \
 
 ifneq ($(filter-out 0,${USE_FLASHROM}),)
 FUTIL_SRCS += host/lib/flashrom_drv.c \
+	futility/archive/updater_archive_fallback.c \
 	futility/updater_archive.c \
 	futility/updater_dut.c \
 	futility/updater_manifest.c \
 	futility/updater_quirks.c \
 	futility/updater_utils.c \
 	futility/updater.c
+
+ifneq ($(filter-out 0,${HAVE_LIBARCHIVE}),)
+FUTIL_SRCS += futility/archive/updater_archive_libarchive.c
+endif
+
+ifneq ($(filter-out 0,${HAVE_LIBZIP}),)
+FUTIL_SRCS += futility/archive/updater_archive_libzip.c
+endif
+
 endif
 
 # List of commands built in futility.
@@ -749,6 +771,7 @@ FUTIL_CMD_LIST = ${BUILD}/gen/futility_cmds.c
 FUTIL_OBJS = ${FUTIL_SRCS:%.c=${BUILD}/%.o} ${FUTIL_CMD_LIST:%.c=%.o}
 
 ${FUTIL_OBJS}: INCLUDES += -Ihost/lib21/include
+${FUTIL_OBJS}: INCLUDES += -Ifutility
 
 # Avoid build failures outside the chroot on Ubuntu 2022.04
 # e.g.:
@@ -808,7 +831,6 @@ TEST2X_NAMES = \
 	tests/vb2_firmware_tests \
 	tests/vb2_gbb_init_tests \
 	tests/vb2_gbb_tests \
-	tests/vb2_host_flashrom_tests \
 	tests/vb2_host_key_tests \
 	tests/vb2_host_nvdata_flashrom_tests \
 	tests/vb2_inject_kernel_subkey_tests \
@@ -826,6 +848,11 @@ TEST2X_NAMES = \
 	tests/vb2_sha_api_tests \
 	tests/vb2_sha_tests \
 	tests/hmac_test
+
+ifneq ($(filter-out 0,${USE_FLASHROM}),)
+TEST2X_NAMES += \
+	tests/vb2_host_flashrom_tests
+endif
 
 TEST20_NAMES = \
 	tests/vb20_api_kernel_tests \

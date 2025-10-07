@@ -202,14 +202,15 @@ static int quirk_unlock_csme(struct updater_config *cfg)
 static int quirk_min_platform_version(struct updater_config *cfg)
 {
 	int min_version = get_config_quirk(QUIRK_MIN_PLATFORM_VERSION, cfg);
-	int platform_version = dut_get_property(DUT_PROP_PLATFORM_VER, cfg);
+	dut_property_t platform_version = dut_get_property(DUT_PROP_PLATFORM_VER, cfg);
 
-	VB2_DEBUG("Minimum required version=%d, current platform version=%d\n",
+	VB2_DEBUG("Minimum required version=%d, "
+		  "current platform version=%" PRId64 "\n",
 		  min_version, platform_version);
 
 	if (platform_version >= min_version)
 		return 0;
-	ERROR("Need platform version >= %d (current is %d). "
+	ERROR("Need platform version >= %d (current is %" PRId64 "). "
 	      "This firmware will only run on newer systems.\n",
 	      min_version, platform_version);
 	return -1;
@@ -331,16 +332,27 @@ static int quirk_ec_partial_recovery(struct updater_config *cfg)
 static int quirk_preserve_me(struct updater_config *cfg)
 {
 	/*
-	 * Only preserve the ME if performing an autoupdate-mode firmware
+	 * If the quirk config was manually set to >=2 (for developers to
+	 * manually do testing), we should also allow preserving ME in any
+	 * updating modes.
+	 *
+	 * However if the quirk config was set to 1 by default, we should
+	 * only preserve the ME if performing an autoupdate-mode firmware
 	 * update. Recovery, factory and any other update modes cannot leave the
 	 * ME as is. Otherwise, a recovery firmware update cannot be relied upon
 	 * to update the ME to a valid version for WP-disabled devices.
 	 */
-	if (cfg->try_update == TRY_UPDATE_OFF) {
-		INFO("No auto-update requested. Not preserving ME.\n");
-		return 0;
+	int mode = get_config_quirk(QUIRK_PRESERVE_ME, cfg);
+	if (mode >= 2) {
+		WARN("FORCED TO PRESERVE CSME. "
+		     "YOUR SYSTEM MAY BE UNSTABLE DUE TO USING AN INCOMPATIBLE CSME.\n");
+	} else {
+		if (cfg->try_update == TRY_UPDATE_OFF) {
+			INFO("No auto-update requested. Not preserving ME.\n");
+			return 0;
+		}
+		INFO("Auto-update requested. Preserving ME.\n");
 	}
-	INFO("Auto-update requested. Preserving ME.\n");
 
 	/*
 	 * b/213706510: subratabanik@ confirmed CSE may modify itself while we
@@ -467,7 +479,8 @@ void updater_register_quirks(struct updater_config *cfg)
 	quirks = &cfg->quirks[QUIRK_PRESERVE_ME];
 	quirks->name = "preserve_me";
 	quirks->help = "b/165590952; Preserve ME during firmware update except "
-		       "for factory update or developer images.";
+		       "for factory update or developer images. Add =2 to "
+		       "always preserve in any modes.";
 	quirks->apply = quirk_preserve_me;
 
 	quirks = &cfg->quirks[QUIRK_NO_CHECK_PLATFORM];
